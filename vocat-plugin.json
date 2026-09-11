@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "telephony-assistant",
+  "name": "电话助手",
+  "version": "0.1.1",
+  "description": "拨号盘与浏览器通话、通话记录与录音、来电规则（黑白名单/自动拒接）、联系人簿、语音留言信箱、按事件的通知模板与测试推送，以及小时级保号任务。",
+  "author": "vocat",
+  "permissions": ["calls.read", "calls.control", "devices.read", "sms.send", "process.spawn"],
+  "contributions": [
+    {
+      "id": "telephony",
+      "label": "Telephony Assistant",
+      "label_zh": "电话助手",
+      "location": "sidebar",
+      "after": "sms",
+      "entry": "web/panel.html"
+    }
+  ],
+  "backend": {
+    "commands": {
+      "linux/arm64": "bin/telephony-linux-arm64",
+      "linux/amd64": "bin/telephony-linux-amd64"
+    }
+  }
+}

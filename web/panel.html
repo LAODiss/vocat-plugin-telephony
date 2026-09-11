@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>电话助手</title>
+    <style>
+      /* Plugin pages run under default-src 'self'; a CDN, external font or
+         remote script would be blocked, so everything here is inline. */
+      :root {
+        --bg: #fff; --fg: #111827; --muted: #6b7280; --border: #e5e7eb;
+        --panel: #f9fafb; --accent: #0ea5e9; --danger: #f56c6c;
+        --warn: #e6a23c; --ok: #67c23a;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #15151a; --fg: #f3f4f6; --muted: #9ca3af;
+          --border: rgba(255,255,255,.1); --panel: rgba(255,255,255,.04);
+        }
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 20px; background: var(--bg); color: var(--fg);
+        font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "PingFang SC", "Microsoft YaHei", sans-serif; }
+      h1 { margin: 0 0 4px; font-size: 18px; font-weight: 700; }
+      .sub { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+      .tabs { display: flex; flex-wrap: wrap; gap: 2px; border-bottom: 1px solid var(--border);
+        margin-bottom: 14px; }
+      .tabs button { border: 0; background: none; color: var(--muted); padding: 8px 13px;
+        cursor: pointer; font: inherit; border-bottom: 2px solid transparent; }
+      .tabs button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+      .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+      .grow { flex: 1 1 200px; min-width: 150px; }
+      label { display: block; font-size: 11px; font-weight: 700; letter-spacing: .04em;
+        text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+      input[type="text"], input[type="url"], input[type="password"], input[type="number"],
+      select, textarea {
+        width: 100%; padding: 6px 9px; color: var(--fg); background: var(--bg);
+        border: 1px solid var(--border); border-radius: 6px; font: inherit; }
+      input, select { height: 32px; }
+      textarea { min-height: 80px; resize: vertical; font-family: ui-monospace, Menlo, monospace;
+        font-size: 12px; }
+      input:focus, select:focus, textarea:focus {
+        outline: 2px solid rgba(14,165,233,.35); outline-offset: -1px; }
+      button.act { height: 32px; padding: 0 13px; border: 1px solid var(--border);
+        border-radius: 6px; background: var(--bg); color: var(--fg); cursor: pointer; font: inherit; }
+      button.act:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+      button.act:disabled { opacity: .5; cursor: not-allowed; }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      button.primary:hover:not(:disabled) { color: #fff; filter: brightness(1.08); }
+      button.danger { color: var(--danger); }
+      button.small { height: 26px; padding: 0 8px; font-size: 12px; }
+      .panel { border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+        padding: 14px; margin-bottom: 14px; }
+      .checkline { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+        color: var(--muted); border-bottom: 1px solid var(--border); padding: 6px 8px 6px 0; }
+      td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--border); vertical-align: middle; }
+      tr:last-child td { border-bottom: 0; }
+      td select, td input { height: 28px; }
+      code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+      .tag { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px;
+        border: 1px solid var(--border); color: var(--muted); }
+      .tag.ok { color: var(--ok); border-color: currentColor; }
+      .tag.warn { color: var(--warn); border-color: currentColor; }
+      .tag.err { color: var(--danger); border-color: currentColor; }
+      .empty { padding: 24px 0; text-align: center; color: var(--muted); }
+      .notice { border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-top: 10px; }
+      .notice.err { color: var(--danger); border: 1px solid currentColor; }
+      .notice.ok { color: var(--ok); border: 1px solid currentColor; }
+      .notice.warn { color: var(--warn); border: 1px solid currentColor; }
+      .notice.info { color: var(--muted); border: 1px solid var(--border); }
+      .muted { color: var(--muted); }
+      .nowrap { white-space: nowrap; }
+      .hidden { display: none; }
+      .scroll { overflow-x: auto; }
+      details { margin-top: 8px; }
+      summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+      .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+      .banner { display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+        justify-content: space-between; }
+      .keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+        max-width: 300px; margin-top: 12px; }
+      .keypad button { height: 46px; border: 1px solid var(--border); border-radius: 8px;
+        background: var(--bg); color: var(--fg); font: 600 18px/1 inherit; cursor: pointer; }
+      .keypad button:hover { border-color: var(--accent); color: var(--accent); }
+      .keypad button:active { transform: scale(.96); }
+      .keypad button small { display: block; margin-top: 3px; font-size: 10px;
+        font-weight: 500; color: var(--muted); letter-spacing: .08em; }
+      .callcard { border: 1px solid var(--border); border-radius: 10px; padding: 12px;
+        margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 10px;
+        align-items: center; justify-content: space-between; background: var(--bg); }
+      .callcard:last-child { margin-bottom: 0; }
+      .dim { font-size: 12px; color: var(--muted); }
+      .mono { font-family: ui-monospace, Menlo, monospace; }
+      .timer { font-family: ui-monospace, Menlo, monospace; font-size: 20px;
+        font-weight: 600; font-variant-numeric: tabular-nums; }
+    </style>
+  </head>
+  <body>
+    <h1>电话助手</h1>
+    <p class="sub">
+      拨号盘、浏览器通话、通话记录与录音，加上来电规则、联系人簿、语音留言、
+      通知模板和小时级保号任务。
+    </p>
+    <div id="engineBanner"></div>
+
+    <div class="tabs">
+      <button id="tabDialer" class="active">拨号</button>
+      <button id="tabHistory">通话记录</button>
+      <button id="tabRules">来电规则</button>
+      <button id="tabContacts">联系人</button>
+      <button id="tabVoicemail">语音留言</button>
+      <button id="tabNotify">通知</button>
+      <button id="tabKeepalive">保号任务</button>
+      <button id="tabEvents">处理记录</button>
+      <button id="tabSettings">设置</button>
+    </div>
+
+    <!-- Dialer -->
+    <section id="paneDialer">
+      <div id="audioBanner"></div>
+      <div class="panel">
+        <div class="row">
+          <div class="grow" style="max-width:240px">
+            <label for="dialDevice">设备</label>
+            <select id="dialDevice"></select>
+          </div>
+          <div class="grow">
+            <label for="dialNumber">号码</label>
+            <input id="dialNumber" type="text" placeholder="+447700900000" />
+          </div>
+          <button id="doDial" class="act primary">呼叫</button>
+          <button id="doBackspace" class="act" title="退格">⌫</button>
+        </div>
+        <div id="keypad" class="keypad"></div>
+        <div id="dialNotice"></div>
+      </div>
+
+      <div class="panel">
+        <div class="banner">
+          <strong>当前通话</strong>
+          <button id="reloadCalls" class="act small">刷新</button>
+        </div>
+        <div id="liveCalls" style="margin-top:10px"><div class="empty">没有进行中的通话。</div></div>
+      </div>
+    </section>
+
+    <!-- Call history -->
+    <section id="paneHistory" class="hidden">
+      <div class="panel">
+        <div class="banner">
+          <div>
+            <strong>通话记录</strong>
+            <div id="historyStats" class="muted" style="font-size:12px"></div>
+          </div>
+          <div class="row">
+            <select id="historyDirection" style="width:130px">
+              <option value="">全部方向</option>
+              <option value="incoming">来电</option>
+              <option value="outgoing">去电</option>
+            </select>
+            <button id="filterMissed" class="act small">仅未接</button>
+            <button id="filterRecorded" class="act small">仅有录音</button>
+            <button id="reloadHistory" class="act small">刷新</button>
+          </div>
+        </div>
+        <div class="notice info" style="margin-top:10px">
+          这份记录由插件轮询 vocat 得到，不是 vocat 自己的通话日志：插件未运行时不会记录，
+          极短的通话也可能落在两次轮询之间而漏掉。原版 vocat 没有通话记录接口可读。
+        </div>
+        <div class="scroll" style="margin-top:10px"><div id="historyList"><div class="empty">加载中…</div></div></div>
+        <div id="historyNotice"></div>
+      </div>
+
+      <div class="panel">
+        <div class="banner">
+          <div>
+            <strong>通话录音</strong>
+            <div class="muted" style="font-size:12px">
+              录的是 vocat 的 WebSocket 下行，不是 RTP 原始流；抖动缓冲丢弃的包抓不到。
+              需要服务端模式。
+            </div>
+          </div>
+          <label class="checkline"><input id="recEnabled" type="checkbox" /> 启用</label>
+        </div>
+        <div class="notice warn" style="margin-top:10px">
+          录音会保存通话双方的声音。请确认在你所处的法域内录音合法，并已获得必要的同意。
+        </div>
+        <div class="grid2" style="margin-top:12px">
+          <div>
+            <label for="recDirection">录制范围</label>
+            <select id="recDirection">
+              <option value="all">全部通话</option>
+              <option value="incoming">仅来电</option>
+              <option value="outgoing">仅去电</option>
+            </select>
+          </div>
+          <div>
+            <label for="recMax">单通上限（秒）</label>
+            <input id="recMax" type="number" min="1" max="3600" />
+          </div>
+          <div>
+            <label for="recQuota">存储上限（MB）</label>
+            <input id="recQuota" type="number" min="8" max="16384" />
+          </div>
+          <div>
+            <label for="recRetention">保留天数（0 = 只受存储上限约束）</label>
+            <input id="recRetention" type="number" min="0" max="3650" />
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px;justify-content:flex-end">
+          <button id="saveRecording" class="act primary">保存</button>
+        </div>
+        <div id="recNotice"></div>
+      </div>
+    </section>
+
+    <!-- Rules -->
+    <section id="paneRules" class="hidden">
+      <div class="panel">
+        <div class="banner">
+          <strong>规则按顺序匹配，命中第一条即生效</strong>
+          <div class="row">
+            <button id="addRule" class="act small">添加规则</button>
+            <button id="saveRules" class="act small primary">保存规则</button>
+          </div>
+        </div>
+        <div class="scroll" style="margin-top:10px"><div id="ruleList"></div></div>
+        <div class="row" style="margin-top:12px">
+          <div class="grow" style="max-width:220px">
+            <label for="fallback">都不匹配时</label>
+            <select id="fallback">
+              <option value="allow">放行（默认）</option>
+              <option value="reject">拒接</option>
+              <option value="answer">接听</option>
+              <option value="voicemail">转语音留言</option>
+            </select>
+          </div>
+        </div>
+        <div id="ruleNotice"></div>
+      </div>
+      <div class="panel">
+        <strong>试算</strong>
+        <div class="muted" style="font-size:12px;margin-top:4px">
+          规则顺序很容易写反，这里可以先看看某个号码会被怎么处理。
+        </div>
+        <div class="row" style="margin-top:10px">
+          <div class="grow">
+            <label for="testNumber">来电号码</label>
+            <input id="testNumber" type="text" placeholder="+447700900123 或 anonymous" />
+          </div>
+          <div class="grow" style="max-width:200px">
+            <label for="testDevice">设备</label>
+            <select id="testDevice"></select>
+          </div>
+          <button id="doEvaluate" class="act">试算</button>
+        </div>
+        <div id="evaluateOut"></div>
+      </div>
+    </section>
+
+    <!-- Contacts -->
+    <section id="paneContacts" class="hidden">
+      <div class="panel">
+        <div class="banner">
+          <div>
+            <strong>联系人簿</strong>
+            <div class="muted" style="font-size:12px">
+              按号码后 9 位有效数字匹配，+447700900123 与 07700900123 视为同一人。
+            </div>
+          </div>
+          <div class="row">
+            <button id="addContact" class="act small">添加</button>
+            <button id="saveContacts" class="act small primary">保存</button>
+          </div>
+        </div>
+        <div class="scroll" style="margin-top:10px"><div id="contactList"></div></div>
+        <div id="contactNotice"></div>
+      </div>
+    </section>
+
+    <!-- Voicemail -->
+    <section id="paneVoicemail" class="hidden">
+      <div class="panel">
+        <div class="banner">
+          <div>
+            <strong>语音留言</strong>
+            <div class="muted" style="font-size:12px">
+              需要「设置」里开启服务端模式，否则关掉页面就无法自动接听录音。
+            </div>
+          </div>
+          <label class="checkline">
+            <input id="vmEnabled" type="checkbox" /> 启用
+          </label>
+        </div>
+        <div class="grid2" style="margin-top:12px">
+          <div>
+            <label for="vmMax">最长录音（秒）</label>
+            <input id="vmMax" type="number" min="1" max="300" />
+          </div>
+          <div>
+            <label for="vmSilence">静音结束（秒）</label>
+            <input id="vmSilence" type="number" min="1" max="60" />
+          </div>
+          <div>
+            <label for="vmRetention">保留天数（0 = 只受容量限制）</label>
+            <input id="vmRetention" type="number" min="0" max="3650" />
+          </div>
+          <div>
+            <label for="vmQuota">容量上限（MB）</label>
+            <input id="vmQuota" type="number" min="8" max="8192" />
+          </div>
+          <div style="grid-column:1/-1">
+            <label for="vmGreeting">提示音文件（相对插件数据目录）</label>
+            <input id="vmGreeting" type="text" placeholder="greeting.wav（留空则直接开始录音）" />
+            <div class="muted" style="font-size:11px;margin-top:4px">
+              必须是 8000 Hz 单声道 16 位 WAV。插件不含语音合成，无法把文字变成语音。
+            </div>
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px;justify-content:flex-end">
+          <button id="saveVoicemail" class="act primary">保存</button>
+        </div>
+        <div id="vmNotice"></div>
+      </div>
+      <div class="panel">
+        <div class="banner">
+          <strong>留言信箱</strong>
+          <button id="reloadMessages" class="act small">刷新</button>
+        </div>
+        <div class="scroll" style="margin-top:10px"><div id="messageList"><div class="empty">加载中…</div></div></div>
+      </div>
+    </section>
+
+    <!-- Notify -->
+    <section id="paneNotify" class="hidden">
+      <div class="panel">
+        <strong>推送通道</strong>
+        <div class="muted" style="font-size:12px;margin-top:4px">
+          插件用自己的通道，不复用 vocat 的：vocat 的接口只返回被掩码的密钥。
+        </div>
+        <div class="grid2" style="margin-top:12px">
+          <div>
+            <label class="checkline"><input id="whEnabled" type="checkbox" /> Webhook</label>
+            <input id="whURLs" type="text" placeholder="https://example.com/hook，多个用逗号分隔" style="margin-top:6px" />
+            <input id="whSecret" type="password" placeholder="签名密钥（可选）" style="margin-top:6px" />
+          </div>
+          <div>
+            <label class="checkline"><input id="tgEnabled" type="checkbox" /> Telegram</label>
+            <input id="tgToken" type="password" placeholder="Bot Token" style="margin-top:6px" />
+            <input id="tgChat" type="text" placeholder="Chat ID" style="margin-top:6px" />
+          </div>
+          <div>
+            <label class="checkline"><input id="ppEnabled" type="checkbox" /> PushPlus</label>
+            <input id="ppToken" type="password" placeholder="Token" style="margin-top:6px" />
+            <input id="ppTopic" type="text" placeholder="群组编码（可选）" style="margin-top:6px" />
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="banner">
+          <div>
+            <strong>事件模板</strong>
+            <div class="muted" style="font-size:12px">
+              占位符：<code id="placeholderList"></code>
+            </div>
+          </div>
+          <button id="saveNotify" class="act small primary">保存通知配置</button>
+        </div>
+        <div id="templateList" style="margin-top:10px"></div>
+        <div id="notifyNotice"></div>
+      </div>
+    </section>
+
+    <!-- Keepalive -->
+    <section id="paneKeepalive" class="hidden">
+      <div class="panel">
+        <div class="notice info">
+          vocat 内置的「自动任务」已支持按天的 per-ICCID 拨号和短信，并会自动切卡、
+          强制 IMS 环境。这里只做它表达不了的部分：小时级间隔，以及「线路空闲多久才执行」。
+          需要切卡的保号请继续用 vocat 的自动任务。
+        </div>
+        <div class="banner" style="margin-top:12px">
+          <strong>保号任务</strong>
+          <div class="row">
+            <button id="addTask" class="act small">添加</button>
+            <button id="saveTasks" class="act small primary">保存</button>
+          </div>
+        </div>
+        <div class="scroll" style="margin-top:10px"><div id="taskList"></div></div>
+        <div id="taskNotice"></div>
+      </div>
+    </section>
+
+    <!-- Events -->
+    <section id="paneEvents" class="hidden">
+      <div class="panel">
+        <div class="banner">
+          <strong>处理记录</strong>
+          <button id="reloadEvents" class="act small">刷新</button>
+        </div>
+        <div class="scroll" style="margin-top:10px"><div id="eventList"><div class="empty">加载中…</div></div></div>
+      </div>
+    </section>
+
+    <!-- Settings -->
+<section id="paneSettings" class="hidden">
+      <div class="panel">
+        <div class="notice warn">
+          <strong>服务端模式会把 vocat 的完整管理员权限交给这个插件。</strong>
+          开启后插件会用你填的账号自行登录 vocat，从而在浏览器关闭时也能拒接、接听和录留言。
+          密码以 0600 权限存在插件数据目录，读取接口只返回掩码，客户端强制只连本机。
+          不开启时，规则只在这个页面打开着的时候生效。
+        </div>
+        <div class="banner" style="margin-top:12px">
+          <strong>服务端模式</strong>
+          <label class="checkline"><input id="credEnabled" type="checkbox" /> 启用</label>
+        </div>
+        <div class="grid2" style="margin-top:12px">
+          <div>
+            <label for="credUser">vocat 管理员账号</label>
+            <input id="credUser" type="text" autocomplete="off" />
+          </div>
+          <div>
+            <label for="credPass">密码</label>
+            <input id="credPass" type="password" autocomplete="new-password" placeholder="留空表示不修改" />
+          </div>
+          <div>
+            <label for="credBase">vocat 地址（仅本机}</label>
+            <input id="credBase" type="text" placeholder="https://127.0.0.1:7575" />
+          </div>
+          <div>
+            <label for="credCert">自签证书路径</label>
+            <input id="credCert" type="text" placeholder="/opt/vocat/data/tls/selfsigned.crt" />
+          </div>
+          <div>
+            <label for="credInsecure">跳过证书校验</label>
+            <input id="credInsecure" type="checkbox" /> 跳过证书校验（读不到证书文件时的退路）
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px;justify-content:flex-end">
+          <button id="saveCredentials" class="act primary">保存并连接</button>
+        </div>
+        <div id="credNotice"></div>
+      </div>
+    </section>
+
+    <script src="callAudio.js"></script>
+    <script src="panel.js"></script>
+  </body>
+</html>
