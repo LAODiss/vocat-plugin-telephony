@@ -347,6 +347,18 @@ func ValidateConfig(config Config) error {
 			return fmt.Errorf("unknown notification event %q", template.Event)
 		}
 	}
+		// Telegram and PushPlus are hardcoded public endpoints, but validating the
+		// target the same way as webhooks keeps the outbound policy consistent.
+		if config.Telegram.Enabled {
+			if _, err := validateOutboundURL("https://api.telegram.org/bot" + url.PathEscape(config.Telegram.BotToken) + "/sendMessage"); err != nil {
+				return fmt.Errorf("telegram endpoint validation failed: %w", err)
+			}
+		}
+		if config.PushPlus.Enabled {
+			if _, err := validateOutboundURL("https://www.pushplus.plus/send"); err != nil {
+				return fmt.Errorf("pushplus endpoint validation failed: %w", err)
+			}
+		}
 	return nil
 }
 

@@ -29,17 +29,7 @@ for arch in "${ARCHES[@]}"; do
   trap 'rm -rf "$stage"' EXIT
   mkdir -p "$stage/bin" "$stage/web"
 
-  python3 - "$arch" <<'PY' > "$stage/vocat-plugin.json"
-import json, sys
-arch = sys.argv[1]
-manifest = json.load(open("vocat-plugin.json"))
-key = f"linux/{arch}"
-commands = manifest["backend"]["commands"]
-if key not in commands:
-    raise SystemExit(f"manifest has no backend command for {key}")
-manifest["backend"]["commands"] = {key: commands[key]}
-json.dump(manifest, sys.stdout, ensure_ascii=False, indent=2)
-PY
+  jq --arg arch "$arch" '.backend.commands = {("linux/" + $arch): .backend.commands["linux/" + $arch]}' vocat-plugin.json > "$stage/vocat-plugin.json"
 
   # CGO off keeps the binary static, matching how vocat itself ships.
   CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags "-s -w" \

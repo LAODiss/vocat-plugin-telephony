@@ -82,6 +82,7 @@ var state = {
   defaults: [], eventNames: [],
   history: [], stats: {}, liveCalls: [],
   historyFilter: { direction: "", missed: false, recorded: false },
+  pendingDelayed: [],
 };
 
 /* ---- tabs ---- */
@@ -770,8 +771,6 @@ function panelTick() {
     if (device.device_type === "wifi_410" || !device.running) return;
     request("/api/devices/" + encodeURIComponent(device.id) + "/calls")
       .then(function (snapshot) {
-        // Only the VoWiFi transport reports a stable call id and state machine;
-        // the cellular transport returns AT-derived integers with no id.
         if (snapshot.transport !== "vowifi") return;
         (snapshot.calls || []).forEach(function (call) {
           var key = device.id + "|" + call.id;
@@ -786,30 +785,83 @@ function panelTick() {
         });
       }).catch(function () { /* a transient read failure is not worth surfacing */ });
   });
+
+  panelTickDrain();
 }
 
 function applyPanelDecision(device, call) {
+  var key = device.id + "|" + call.id;
   request(BACKEND + "/rules/evaluate", {
     method: "POST", body: { device_id: device.id, number: call.number },
   }).then(function (decision) {
-    if (decision.action === "allow") return null;
+    if (decision.action === "allow") {
+      if (decision.delay_seconds && decision.delay_seconds > 0) {
+        var delayUntil = Date.now() + decision.delay_seconds * 1000;
+        if (!state.pendingDelayed) state.pendingDelayed = [];
+        state.pendingDelayed.push({
+          key: key,
+          device: device,
+          call: call,
+          decision: decision,
+          delayUntil: delayUntil,
+        });
+        notice("ruleNotice", "info", "面板模式已排队延迟 " + decision.delay_seconds + " 秒后接听 " +
+          esc(decision.contact_name || call.number));
+        return null;
+      }
+      return request("/api/devices/" + encodeURIComponent(device.id) + "/calls/answer", {
+        method: "POST", body: { call_id: call.id },
+      }).then(function () {
+        notice("ruleNotice", "ok", "面板模式已接听 " + esc(decision.contact_name || call.number));
+        loadEvents();
+      });
+    }
+    if (decision.action === "reject") {
+      return request("/api/devices/" + encodeURIComponent(device.id) + "/calls/hangup", {
+        method: "POST", body: { call_id: call.id },
+      }).then(function () {
+        notice("ruleNotice", "ok", "面板模式已拒接 " + esc(decision.contact_name || call.number));
+        loadEvents();
+      });
+    }
     if (decision.action === "voicemail") {
-      // Recording needs the backend to hold the audio socket, which requires a
-      // vocat session it does not have in panel mode.
-      notice("ruleNotice", "warn", "规则要求转语音留言，但服务端模式未开启，已改为放行：" +
-        esc(call.number));
+      notice("ruleNotice", "warn", "规则要求转语音留言，但当前未开启服务端模式，无法执行留言动作（来电 " +
+        esc(call.number) + "）已保持 ringing 状态。如需自动留言，请在电话助手设置中启用服务端模式。");
       return null;
     }
-    var path = decision.action === "reject" ? "/hangup" : "/answer";
-    return request("/api/devices/" + encodeURIComponent(device.id) + "/calls" + path, {
-      method: "POST", body: { call_id: call.id },
-    }).then(function () {
-      notice("ruleNotice", "ok", "面板模式已" + (decision.action === "reject" ? "拒接" : "接听") +
-        " " + esc(decision.contact_name || call.number));
-      loadEvents();
-    });
+    return null;
   }).catch(function (error) {
     notice("ruleNotice", "err", "面板模式处理失败：" + esc(error.message));
+  });
+}
+
+/* panelTick drains any queued delayed answers whose timer has elapsed so the
+ * panel still acts on a delay rule even if the page was in the background when
+ * it was queued. */
+function panelTickDrain() {
+  if (!state.pendingDelayed || !state.pendingDelayed.length) return;
+  var due = [];
+  var remaining = [];
+  var now = Date.now();
+  state.pendingDelayed.forEach(function (item) {
+    if (now < item.delayUntil) {
+      remaining.push(item);
+      return;
+    }
+    due.push(item);
+  });
+  state.pendingDelayed = remaining;
+  due.forEach(function (item) {
+    if (panelHandled[item.key]) return;
+    panelHandled[item.key] = true;
+    request("/api/devices/" + encodeURIComponent(item.device.id) + "/calls/answer", {
+      method: "POST", body: { call_id: item.call.id },
+    }).then(function () {
+      notice("ruleNotice", "ok", "面板模式延迟接听已执行 " + esc(item.decision.contact_name || item.call.number));
+      loadEvents();
+    }).catch(function (error) {
+      notice("ruleNotice", "err", "面板模式延迟接听失败：" + esc(error.message));
+    });
   });
 }
 
@@ -898,8 +950,10 @@ function loadLiveCalls() {
       .catch(function () { return null; });
   })).then(function (results) {
     var calls = [];
+    var anySuccess = false;
     results.forEach(function (result) {
       if (!result || !result.snapshot) return;
+      anySuccess = true;
       // Only the VoWiFi transport reports a stable call id; the cellular
       // transport returns AT-derived integers that cannot be acted on.
       if (result.snapshot.transport !== "vowifi") return;
@@ -908,9 +962,14 @@ function loadLiveCalls() {
         calls.push({ device: result.device, call: call });
       });
     });
-    state.liveCalls = calls;
+    // A transient read failure is not worth severing browser audio that is
+    // already bridged to a live call; keep the previous snapshot until the
+    // next successful refresh.
+    if (anySuccess) {
+      state.liveCalls = calls;
+    }
     renderLiveCalls();
-    reconcileAudio();
+    if (anySuccess) reconcileAudio();
   });
 }
 
@@ -1096,7 +1155,9 @@ function toggleMute() {
 }
 
 /* reconcileAudio releases the microphone when the bridged call is gone, so a
- * finished call never leaves the recording indicator on. */
+ * finished call never leaves the recording indicator on. A refresh failure
+ * must not sever an already-bridged call, so it is only called after a
+ * successful snapshot. */
 function reconcileAudio() {
   if (!activeAudioCall) return;
   var stillLive = state.liveCalls.some(function (entry) {

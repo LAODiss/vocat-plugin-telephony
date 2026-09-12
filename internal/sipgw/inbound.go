@@ -362,6 +362,14 @@ func (gateway *Gateway) cancelBranch(dlg *dialog) {
 	}
 	target, err := net.ResolveUDPAddr("udp", dlg.target)
 	if err == nil && dlg.inviteRequest != nil {
+		// The resolved endpoint must be a SIP port; sending a CANCEL to a
+		// non-SIP port would be silently lost and leave the branch dangling.
+		if target.Port == 0 || target.Port == 65535 {
+			gateway.logger.Warn("cancelBranch: invalid target port", "target", dlg.target)
+			dlg.close()
+			gateway.dialogs.remove(dlg)
+			return
+		}
 		cancel := &sip.Message{Method: "CANCEL", URI: dlg.inviteRequest.URI}
 		// A CANCEL must carry the same branch as the INVITE it withdraws, or the
 		// client will not match it to the pending transaction.
