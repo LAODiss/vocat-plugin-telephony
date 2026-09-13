@@ -56,6 +56,80 @@ type VoicemailSettings struct {
 	RetentionDays int   `json:"retention_days"`
 }
 
+// SIPSettings configures the built-in SIP gateway that lets a softphone —
+// typically a phone running Linphone or a similar client — register and place
+// and receive calls through vocat's modem. The gateway is part of this plugin
+// (internal/sipgw) and binds its own UDP socket, so the listen address and the
+// source allowlist are security decisions, not cosmetic ones.
+type SIPSettings struct {
+	Enabled bool `json:"enabled"`
+	// Username and Password form the single SIP account served. Digest auth is
+	// mandatory; a gateway without a password would let anyone place calls on
+	// the operator's SIM.
+	Username string `json:"username"`
+	Password string `json:"password"`
+	// ListenAddress is the UDP bind address, host:port. An empty host means
+	// every interface, which is why the panel shows a warning when it is 0.0.0.0.
+	ListenAddress string `json:"listen_address"`
+	// AdvertiseIP pins the address written into SDP and Contact headers. Empty
+	// derives it per peer from the route, which is correct on multi-homed hosts.
+	AdvertiseIP string `json:"advertise_ip,omitempty"`
+	// DeviceID selects the vocat device whose SIM carries the calls.
+	DeviceID string `json:"device_id"`
+	// AllowedSources restricts which CIDRs may register. Empty allows any
+	// source that authenticates, reasonable only on a trusted LAN.
+	AllowedSources []string `json:"allowed_sources,omitempty"`
+}
+
+// DefaultSIP is the policy applied before anything is configured: disabled.
+func DefaultSIP() SIPSettings {
+	return SIPSettings{
+		Enabled:       false,
+		ListenAddress: "0.0.0.0:5060",
+	}
+}
+
+// Normalize fills defaults and trims user input into a workable shape.
+func (settings SIPSettings) Normalize() SIPSettings {
+	if strings.TrimSpace(settings.ListenAddress) == "" {
+		settings.ListenAddress = DefaultSIP().ListenAddress
+	}
+	settings.ListenAddress = strings.TrimSpace(settings.ListenAddress)
+	settings.Username = strings.TrimSpace(settings.Username)
+	settings.AdvertiseIP = strings.TrimSpace(settings.AdvertiseIP)
+	settings.DeviceID = strings.TrimSpace(settings.DeviceID)
+	sources := make([]string, 0, len(settings.AllowedSources))
+	for _, source := range settings.AllowedSources {
+		if trimmed := strings.TrimSpace(source); trimmed != "" {
+			sources = append(sources, trimmed)
+		}
+	}
+	settings.AllowedSources = sources
+	return settings
+}
+
+// Validate reports why the settings cannot run. Empty means acceptable.
+func (settings SIPSettings) Validate() error {
+	if !settings.Enabled {
+		return nil
+	}
+	if settings.Username == "" || settings.Password == "" {
+		return errors.New("SIP 网关需要用户名和密码（软话机注册用）")
+	}
+	if settings.DeviceID == "" {
+		return errors.New("SIP 网关需要选择一个承载通话的设备")
+	}
+	return nil
+}
+
+// redactSIP masks the SIP password so the read path never returns it.
+func redactSIP(value SIPSettings) SIPSettings {
+	if value.Password != "" {
+		value.Password = SecretMask
+	}
+	return value
+}
+
 // DefaultVoicemail is the policy applied before anything is configured.
 func DefaultVoicemail() VoicemailSettings {
 	return VoicemailSettings{
@@ -291,6 +365,7 @@ type document struct {
 	Voicemail   VoicemailSettings  `json:"voicemail"`
 	Recording   RecordingSettings  `json:"recording"`
 	Notify      notify.Config      `json:"notify"`
+	SIP         SIPSettings        `json:"sip"`
 	Keepalive   []KeepaliveTask    `json:"keepalive"`
 	Messages    []VoicemailMessage `json:"messages"`
 	Calls       []CallRecord       `json:"calls"`
@@ -327,6 +402,7 @@ func (store *Store) load() (document, error) {
 			Fallback:  rules.ActionAllow,
 			Voicemail: DefaultVoicemail(),
 			Recording: DefaultRecording(),
+			SIP:       DefaultSIP(),
 		}, nil
 	}
 	if err != nil {
@@ -346,6 +422,9 @@ func (store *Store) load() (document, error) {
 	// would otherwise read as "enabled with a zero cap".
 	if loaded.Recording.MaxSeconds == 0 {
 		loaded.Recording = DefaultRecording()
+	}
+	if loaded.SIP.ListenAddress == "" {
+		loaded.SIP = loaded.SIP.Normalize()
 	}
 	return loaded, nil
 }
@@ -376,6 +455,7 @@ type Snapshot struct {
 	Voicemail   VoicemailSettings  `json:"voicemail"`
 	Recording   RecordingSettings  `json:"recording"`
 	Notify      notify.Config      `json:"notify"`
+	SIP         SIPSettings        `json:"sip"`
 	Keepalive   []KeepaliveTask    `json:"keepalive"`
 }
 
@@ -394,6 +474,7 @@ func (store *Store) Snapshot() (Snapshot, error) {
 		Contacts:    nonNilContacts(loaded.Contacts),
 		Voicemail:   loaded.Voicemail,
 		Recording:   loaded.Recording,
+		SIP:         redactSIP(loaded.SIP),
 		Notify:      redactNotify(loaded.Notify),
 		Keepalive:   nonNilTasks(loaded.Keepalive),
 	}, nil
@@ -414,6 +495,7 @@ func (store *Store) Config() (Snapshot, error) {
 		Contacts:    nonNilContacts(loaded.Contacts),
 		Voicemail:   loaded.Voicemail,
 		Recording:   loaded.Recording,
+		SIP:         loaded.SIP,
 		Notify:      loaded.Notify,
 		Keepalive:   nonNilTasks(loaded.Keepalive),
 	}, nil
@@ -520,6 +602,26 @@ func (store *Store) SaveVoicemail(settings VoicemailSettings) error {
 		return err
 	}
 	loaded.Voicemail = settings.Normalize()
+	return store.save(loaded)
+}
+
+// SaveSIP stores the SIP gateway policy. A masked password keeps the stored
+// one, mirroring SaveCredentials, because the panel always shows ********.
+func (store *Store) SaveSIP(settings SIPSettings) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	loaded, err := store.load()
+	if err != nil {
+		return err
+	}
+	if settings.Password == SecretMask || settings.Password == "" {
+		settings.Password = loaded.SIP.Password
+	}
+	settings = settings.Normalize()
+	if err := settings.Validate(); err != nil {
+		return err
+	}
+	loaded.SIP = settings
 	return store.save(loaded)
 }
 

@@ -77,7 +77,7 @@ function notice(target, kind, html) {
 /* ---- state ---- */
 var state = {
   rules: [], fallback: "allow", contacts: [], voicemail: {}, recording: {},
-  notify: { templates: [] }, keepalive: [], credentials: {},
+  notify: { templates: [] }, keepalive: [], credentials: {}, sip: {},
   engine: {}, devices: [], events: [], messages: [],
   defaults: [], eventNames: [],
   history: [], stats: {}, liveCalls: [],
@@ -90,13 +90,13 @@ var TABS = {
   dialer: "paneDialer", history: "paneHistory",
   rules: "paneRules", contacts: "paneContacts", voicemail: "paneVoicemail",
   notify: "paneNotify", keepalive: "paneKeepalive", events: "paneEvents",
-  settings: "paneSettings",
+  sip: "paneSIP", settings: "paneSettings",
 };
 var TAB_BUTTONS = {
   dialer: "tabDialer", history: "tabHistory",
   rules: "tabRules", contacts: "tabContacts", voicemail: "tabVoicemail",
   notify: "tabNotify", keepalive: "tabKeepalive", events: "tabEvents",
-  settings: "tabSettings",
+  sip: "tabSIP", settings: "tabSettings",
 };
 
 function showTab(which) {
@@ -108,6 +108,7 @@ function showTab(which) {
   if (which === "voicemail") loadMessages();
   if (which === "history") loadHistory();
   if (which === "dialer") loadLiveCalls();
+  if (which === "sip") loadSIPStatus();
 }
 
 for (var key in TAB_BUTTONS) {
@@ -367,6 +368,88 @@ el("saveVoicemail").addEventListener("click", function () {
   }).catch(function (error) {
     notice("vmNotice", "err", esc(error.message));
   }).then(function () { el("saveVoicemail").disabled = false; });
+});
+
+/* ---- SIP gateway ---- */
+function renderSIP() {
+  var settings = state.sip || {};
+  el("sipEnabled").checked = !!settings.enabled;
+  el("sipUser").value = settings.username || "";
+  el("sipPass").value = settings.password || "";
+  el("sipListen").value = settings.listen_address || "0.0.0.0:5060";
+  el("sipAdvertise").value = settings.advertise_ip || "";
+  el("sipSources").value = (settings.allowed_sources || []).join("\n");
+  // Device options come from the same list the dialer uses; keep the saved
+  // selection when the list has loaded after the settings did.
+  var current = settings.device_id || "";
+  el("sipDevice").innerHTML = (state.devices || []).map(function (device) {
+    var label = device.name || device.id;
+    if (device.name && device.id !== device.name) label += "（" + device.id + "）";
+    return '<option value="' + esc(device.id) + '">' + esc(label) + "</option>";
+  }).join("") || '<option value="">暂无设备</option>';
+  if (current) el("sipDevice").value = current;
+}
+
+function renderSIPStatus(gateway) {
+  var target = el("sipStatus");
+  if (!gateway) { target.innerHTML = ""; return; }
+  if (!gateway.enabled) {
+    target.innerHTML = '<div class="notice err">网关未运行：' + esc(gateway.reason || "未启用") + "</div>";
+    return;
+  }
+  var status = gateway.status || {};
+  var lines = ['<div class="notice ok">网关运行中：' + esc(status.address || "") +
+    " · 域 " + esc(status.realm || "") + " · 活跃通话 " + (status.active_calls || 0) + "</div>"];
+  var bindings = status.bindings || [];
+  if (!bindings.length) {
+    lines.push('<div class="muted" style="font-size:12px">暂无软话机注册。手机端：服务器填运行插件的主机地址，' +
+      "用户名/密码用上面配置的 SIP 账号，端口为监听地址里的端口。</div>");
+  } else {
+    lines.push("<table><thead><tr><th>联系人</th><th>来源</th><th>客户端</th><th>剩余有效期</th></tr></thead><tbody>" +
+      bindings.map(function (binding) {
+        return "<tr><td>" + esc(binding.contact) + "</td><td>" + esc(binding.target) + "</td><td>" +
+          esc(binding.user_agent || "-") + "</td><td>" + (binding.expires_in || 0) + "s</td></tr>";
+      }).join("") + "</tbody></table>");
+  }
+  target.innerHTML = lines.join("");
+}
+
+function loadSIPStatus() {
+  request(BACKEND + "/sip/status").then(function (data) {
+    renderSIPStatus(data.gateway);
+  }).catch(function (error) {
+    el("sipStatus").innerHTML = '<div class="notice err">' + esc(error.message) + "</div>";
+  });
+}
+
+el("saveSIP").addEventListener("click", function () {
+  notice("sipNotice", "", "");
+  el("saveSIP").disabled = true;
+  var sources = el("sipSources").value.split("\n").map(function (line) {
+    return line.trim();
+  }).filter(Boolean);
+  request(BACKEND + "/sip/settings", {
+    method: "PUT",
+    body: {
+      enabled: el("sipEnabled").checked,
+      username: el("sipUser").value.trim(),
+      password: el("sipPass").value,
+      listen_address: el("sipListen").value.trim() || "0.0.0.0:5060",
+      advertise_ip: el("sipAdvertise").value.trim(),
+      device_id: el("sipDevice").value,
+      allowed_sources: sources,
+    },
+  }).then(function (data) {
+    state.sip = data.sip || {};
+    el("sipPass").value = state.sip.password || "";
+    renderSIP();
+    renderSIPStatus(data.gateway);
+    var extra = el("sipEnabled").checked && !(state.engine || {}).enabled
+      ? " 注意：服务端模式未开启，网关不会启动。" : "";
+    notice("sipNotice", "ok", "已保存并应用。" + extra);
+  }).catch(function (error) {
+    notice("sipNotice", "err", esc(error.message));
+  }).then(function () { el("saveSIP").disabled = false; });
 });
 
 var pendingMessageDelete = "";
@@ -1349,6 +1432,8 @@ function loadDevices() {
       };
     });
     el("testDevice").innerHTML = deviceOptions("", "全部设备");
+    // The SIP pane's device dropdown shares this list; refresh it if already rendered.
+    if (typeof renderSIP === "function" && document.getElementById("sipDevice")) renderSIP();
   }).catch(function () {
     // The device list only drives dropdowns; the rest of the panel still works.
     state.devices = [];
@@ -1373,6 +1458,7 @@ function loadAll() {
     state.notify = config.notify || { templates: [] };
     state.keepalive = config.keepalive || [];
     state.credentials = config.credentials || {};
+    state.sip = config.sip || {};
     state.recording = config.recording || {};
     state.stats = config.stats || {};
 
@@ -1390,6 +1476,7 @@ function loadAll() {
     renderNotify();
     renderTasks();
     renderCredentials();
+    renderSIP();
     loadLiveCalls();
   }).catch(function (error) {
     el("engineBanner").innerHTML = '<div class="notice err">加载失败：' + esc(error.message) + "</div>";

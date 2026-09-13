@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -38,6 +39,7 @@ import (
 	"vocat-plugin-telephony/internal/notify"
 	"vocat-plugin-telephony/internal/recorder"
 	"vocat-plugin-telephony/internal/rules"
+	"vocat-plugin-telephony/internal/sipgw"
 	"vocat-plugin-telephony/internal/store"
 )
 
@@ -84,6 +86,8 @@ func main() {
 	mux.HandleFunc("/recording/settings", srv.handleRecordingSettings)
 	mux.HandleFunc("/calls", srv.handleCalls)
 	mux.HandleFunc("/calls/", srv.handleCall)
+	mux.HandleFunc("/sip/settings", srv.handleSIPSettings)
+	mux.HandleFunc("/sip/status", srv.handleSIPStatus)
 
 	httpServer := &http.Server{
 		Addr:              listen,
@@ -97,11 +101,17 @@ func main() {
 	runCtx, stopRun := context.WithCancel(context.Background())
 	go runtime.Run(runCtx)
 
+	// The SIP gateway needs a logged-in vocat client, which Reload above either
+	// established or deliberately left off. A failed start is logged, never
+	// fatal: the panel still works and the status endpoint explains why.
+	srv.applySIPGateway()
+
 	signalCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopSignals()
 	go func() {
 		<-signalCtx.Done()
 		stopRun()
+		srv.stopSIPGateway()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = httpServer.Shutdown(shutdown)
@@ -118,6 +128,11 @@ type server struct {
 	store  *store.Store
 	engine *engine.Engine
 	logger *slog.Logger
+
+	// gatewayMu guards the SIP gateway handle. The gateway is rebuilt whenever
+	// the SIP settings or the vocat credentials change, and stopped at shutdown.
+	gatewayMu sync.Mutex
+	gateway   *sipgw.Gateway
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -159,6 +174,7 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"voicemail":   snapshot.Voicemail,
 		"recording":   snapshot.Recording,
 		"notify":      snapshot.Notify,
+		"sip":         snapshot.SIP,
 		"keepalive":   snapshot.Keepalive,
 		"stats":       stats,
 		"engine":      s.engine.Status(),
@@ -183,6 +199,9 @@ func (s *server) handleCredentials(w http.ResponseWriter, r *http.Request) {
 	reloadCtx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
 	defer cancel()
 	reloadErr := s.engine.Reload(reloadCtx)
+	// The gateway holds its own reference to the vocat client; rebuild it so a
+	// credential change takes effect without restarting the plugin.
+	s.applySIPGateway()
 
 	snapshot, err := s.store.Snapshot()
 	if err != nil {
@@ -281,6 +300,138 @@ func (s *server) handleContacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"contacts": snapshot.Contacts}})
+}
+
+// handleSIPSettings reads and writes the SIP gateway policy. A change rebuilds
+// the gateway: the listen address, account, and device are fixed at Start.
+func (s *server) handleSIPSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		snapshot, err := s.store.Snapshot()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "store_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"sip": snapshot.SIP}})
+	case http.MethodPut:
+		var request store.SIPSettings
+		if err := decodeJSON(r, &request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		if err := s.store.SaveSIP(request); err != nil {
+			writeError(w, http.StatusBadRequest, "save_failed", err.Error())
+			return
+		}
+		s.applySIPGateway()
+		snapshot, err := s.store.Snapshot()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "store_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+			"sip": snapshot.SIP, "gateway": s.sipStatusPayload(),
+		}})
+	default:
+		w.Header().Set("Allow", "GET, PUT")
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+	}
+}
+
+// handleSIPStatus reports whether the gateway is up and which softphones are
+// registered, so the panel can show a live picture of the SIP side.
+func (s *server) handleSIPStatus(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"gateway": s.sipStatusPayload()}})
+}
+
+// sipStatusPayload describes the gateway for the panel. When it is not running
+// the payload says why, so a misconfiguration is visible rather than silent.
+func (s *server) sipStatusPayload() map[string]any {
+	s.gatewayMu.Lock()
+	gateway := s.gateway
+	s.gatewayMu.Unlock()
+	if gateway != nil {
+		return map[string]any{"enabled": true, "status": gateway.Status()}
+	}
+	reason := "disabled"
+	snapshot, err := s.store.Snapshot()
+	if err != nil {
+		reason = "store_failed: " + err.Error()
+	} else if snapshot.SIP.Enabled {
+		if s.engine.Client() == nil {
+			reason = "需要先在「设置」里开启服务端模式：SIP 网关必须能自己调用 vocat 的通话接口"
+		} else {
+			reason = "启动失败，请检查监听地址是否被占用"
+		}
+	}
+	return map[string]any{"enabled": false, "reason": reason}
+}
+
+// applySIPGateway reconciles the running gateway with the stored settings.
+// Idempotent: call it after any change to SIP settings or vocat credentials.
+func (s *server) applySIPGateway() {
+	s.gatewayMu.Lock()
+	defer s.gatewayMu.Unlock()
+	config, err := s.store.Config()
+	if err != nil {
+		s.logger.Warn("SIP gateway: read settings failed", "error", err)
+		return
+	}
+	settings := config.SIP.Normalize()
+	if !settings.Enabled {
+		s.stopSIPGatewayLocked()
+		return
+	}
+	client := s.engine.Client()
+	if client == nil {
+		s.stopSIPGatewayLocked()
+		s.logger.Warn("SIP gateway not started: server-side mode is off; enable it in the panel settings")
+		return
+	}
+	// Rebuild unconditionally: the gateway captures account and address at
+	// Start, so any settings change needs a fresh instance. Restarting is cheap
+	// (one UDP bind) and callers invoke this only on explicit changes.
+	s.stopSIPGatewayLocked()
+	gateway, err := sipgw.New(sipgw.Config{
+		ListenAddress: settings.ListenAddress,
+		AdvertiseIP:   settings.AdvertiseIP,
+		Realm:         "vocat",
+		Account: sipgw.Account{
+			Username: settings.Username,
+			Password: settings.Password,
+			DeviceID: settings.DeviceID,
+		},
+		AllowedSources: settings.AllowedSources,
+	}, client, s.logger)
+	if err != nil {
+		s.logger.Warn("SIP gateway configuration rejected", "error", err)
+		return
+	}
+	if err := gateway.Start(); err != nil {
+		s.logger.Warn("SIP gateway failed to start", "listen", settings.ListenAddress, "error", err)
+		return
+	}
+	s.gateway = gateway
+	s.logger.Info("SIP gateway started", "listen", gateway.Status().Address,
+		"device", settings.DeviceID, "user", settings.Username)
+}
+
+// stopSIPGateway stops and forgets the gateway, if one is running.
+func (s *server) stopSIPGateway() {
+	s.gatewayMu.Lock()
+	defer s.gatewayMu.Unlock()
+	s.stopSIPGatewayLocked()
+}
+
+func (s *server) stopSIPGatewayLocked() {
+	if s.gateway == nil {
+		return
+	}
+	s.gateway.Stop()
+	s.gateway = nil
 }
 
 func (s *server) handleVoicemailSettings(w http.ResponseWriter, r *http.Request) {

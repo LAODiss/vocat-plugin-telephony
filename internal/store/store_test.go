@@ -88,6 +88,51 @@ func TestSavingAMaskedSecretKeepsTheStoredOne(t *testing.T) {
 	}
 }
 
+func TestSIPSettingsMaskValidationAndDefaults(t *testing.T) {
+	database := openTestStore(t)
+	// Disabled by default with a usable listen address.
+	snapshot, err := database.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if snapshot.SIP.Enabled || snapshot.SIP.ListenAddress == "" {
+		t.Fatalf("default SIP = %+v, want disabled with a listen address", snapshot.SIP)
+	}
+	// Enabling without an account or device is rejected.
+	if err := database.SaveSIP(SIPSettings{Enabled: true}); err == nil {
+		t.Fatal("enabling the SIP gateway without credentials must fail")
+	}
+	if err := database.SaveSIP(SIPSettings{
+		Enabled: true, Username: "iphone", Password: "dialtone", DeviceID: "modem1",
+	}); err != nil {
+		t.Fatalf("SaveSIP() error = %v", err)
+	}
+	// The panel sends the mask back when editing another field.
+	if err := database.SaveSIP(SIPSettings{
+		Enabled: true, Username: "iphone", Password: SecretMask, DeviceID: "modem2",
+	}); err != nil {
+		t.Fatalf("SaveSIP(masked) error = %v", err)
+	}
+	config, err := database.Config()
+	if err != nil {
+		t.Fatalf("Config() error = %v", err)
+	}
+	if config.SIP.Password != "dialtone" {
+		t.Fatalf("password = %q, want the stored value preserved", config.SIP.Password)
+	}
+	if config.SIP.DeviceID != "modem2" {
+		t.Fatalf("device = %q, want the edit applied", config.SIP.DeviceID)
+	}
+	// Snapshot masks, Config does not: same rule as the vocat credentials.
+	snapshot, err = database.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if snapshot.SIP.Password != SecretMask {
+		t.Fatalf("Snapshot SIP password = %q, must be masked", snapshot.SIP.Password)
+	}
+}
+
 func TestEnablingServerModeRequiresCredentials(t *testing.T) {
 	database := openTestStore(t)
 	if err := database.SaveCredentials(Credentials{Enabled: true, Username: "admin"}); err == nil {

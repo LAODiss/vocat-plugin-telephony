@@ -115,6 +115,7 @@
       <button id="tabVoicemail">语音留言</button>
       <button id="tabNotify">通知</button>
       <button id="tabKeepalive">保号任务</button>
+      <button id="tabSIP">SIP 网关</button>
       <button id="tabEvents">处理记录</button>
       <button id="tabSettings">设置</button>
     </div>
@@ -445,6 +446,53 @@
           <button id="saveCredentials" class="act primary">保存并连接</button>
         </div>
         <div id="credNotice"></div>
+      </div>
+    </section>
+
+    <!-- SIP gateway -->
+    <section id="paneSIP" class="hidden">
+      <div class="panel">
+        <div class="notice warn">
+          <strong>SIP 网关让 iPhone 等软话机通过 vocat 的 SIM 打电话。</strong>
+          手机用 SIP 客户端（如 Linphone）注册到这个地址，拨号由网关转发到 vocat 的通话接口，
+          语音经 RTP 桥接到模组。前提：上方「设置」里已开启服务端模式——网关必须能自己调用 vocat。
+          SIP 端口不经过 vocat 的访问控制，务必设置强密码；公网暴露会在数小时内被扫描。
+        </div>
+        <div class="banner" style="margin-top:12px">
+          <strong>SIP 网关</strong>
+          <label class="checkline"><input id="sipEnabled" type="checkbox" /> 启用</label>
+        </div>
+        <div class="grid2" style="margin-top:12px">
+          <div>
+            <label for="sipUser">SIP 用户名</label>
+            <input id="sipUser" type="text" autocomplete="off" placeholder="iphone" />
+          </div>
+          <div>
+            <label for="sipPass">SIP 密码</label>
+            <input id="sipPass" type="password" autocomplete="new-password" placeholder="留空表示不修改" />
+          </div>
+          <div>
+            <label for="sipDevice">承载通话的设备</label>
+            <select id="sipDevice"></select>
+          </div>
+          <div>
+            <label for="sipListen">监听地址（UDP）</label>
+            <input id="sipListen" type="text" placeholder="0.0.0.0:5060" />
+          </div>
+          <div>
+            <label for="sipAdvertise">广播地址（可选，多网卡时固定 SDP 地址）</label>
+            <input id="sipAdvertise" type="text" placeholder="留空自动按对端选择" />
+          </div>
+          <div>
+            <label for="sipSources">允许注册的来源（每行一个 IP 或 CIDR，留空不限）</label>
+            <input id="sipSources" type="text" placeholder="192.168.1.0/24" />
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px;justify-content:flex-end">
+          <button id="saveSIP" class="act primary">保存并应用</button>
+        </div>
+        <div id="sipNotice"></div>
+        <div id="sipStatus" style="margin-top:10px"></div>
       </div>
     </section>
 
