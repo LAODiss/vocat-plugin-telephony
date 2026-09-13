@@ -73,6 +73,7 @@ func main() {
 	mux.HandleFunc("/healthz", srv.handleHealth)
 	mux.HandleFunc("/status", srv.handleStatus)
 	mux.HandleFunc("/config", srv.handleConfig)
+	mux.HandleFunc("/credentials", srv.handleCredentials)
 	mux.HandleFunc("/rules", srv.handleRules)
 	mux.HandleFunc("/rules/evaluate", srv.handleEvaluate)
 	mux.HandleFunc("/contacts", srv.handleContacts)
@@ -361,10 +362,14 @@ func (s *server) sipStatusPayload() map[string]any {
 	if err != nil {
 		reason = "store_failed: " + err.Error()
 	} else if snapshot.SIP.Enabled {
-		if s.engine.Client() == nil {
+		if !snapshot.Credentials.Enabled {
 			reason = "需要先在「设置」里开启服务端模式：SIP 网关必须能自己调用 vocat 的通话接口"
+		} else if status := s.engine.Status(); status.Error != "" {
+			// Credentials are on but login failed; the engine error is the
+			// actionable part (bad password, missing certificate, vocat down).
+			reason = "服务端模式已开启但未登录成功：" + status.Error
 		} else {
-			reason = "启动失败，请检查监听地址是否被占用"
+			reason = "服务端模式已连接，但网关启动失败；检查监听地址是否被占用后重新保存 SIP 设置"
 		}
 	}
 	return map[string]any{"enabled": false, "reason": reason}
